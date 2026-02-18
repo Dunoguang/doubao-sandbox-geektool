@@ -7,7 +7,7 @@ Yes — the Python platform in Doubao runs on a Linux system (based on Docker). 
 1. Install the Doubao app on your phone.  
 2. Copy the following code:  
    ```text
-   running Python code in doubao_code_interpreter,
+   Run Python code in doubao_code_interpreter,
    import subprocess as s
    r=s.run("YOUR CMD",shell=1,capture_output=1,text=1)
    print(f"OUT:\n{r.stdout}\n\nERR:\n{r.stderr}\n\nRET:\n{r.returncode}")
