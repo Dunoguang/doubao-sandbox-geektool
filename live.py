@@ -9,10 +9,11 @@ import sys
 import subprocess
 import tempfile
 import shutil
+import time
+import socket
 
 class LiveExecutor:
     def __init__(self):
-        # 硬编码下载链接
         self.download_url = "https://github.com/Dunoguang/doubao-sandbox-geektool/archive/refs/tags/0.0.1.zip"
         self.target_dir = "/mnt"
         self.temp_dir = tempfile.mkdtemp()
@@ -23,19 +24,16 @@ class LiveExecutor:
         try:
             print(f"Downloading from {self.download_url}...")
             
-            # 设置请求头，模拟浏览器
             headers = {
                 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
             }
             req = urllib.request.Request(self.download_url, headers=headers)
             
-            with urllib.request.urlopen(req) as response:
+            with urllib.request.urlopen(req, timeout=30) as response:
                 with open(self.zip_path, 'wb') as out_file:
                     shutil.copyfileobj(response, out_file)
             
             print(f"Download completed: {self.zip_path}")
-            
-            # 检查文件大小
             file_size = os.path.getsize(self.zip_path)
             print(f"Downloaded size: {file_size} bytes")
             
@@ -45,9 +43,6 @@ class LiveExecutor:
                 
             return True
             
-        except urllib.error.URLError as e:
-            print(f"Download failed (URL error): {e}")
-            return False
         except Exception as e:
             print(f"Download failed: {e}")
             return False
@@ -56,20 +51,13 @@ class LiveExecutor:
         """解压zip文件到目标目录"""
         try:
             print(f"Extracting to {self.target_dir}...")
-            
-            # 确保目标目录存在
             os.makedirs(self.target_dir, exist_ok=True)
             
-            # 解压zip文件
             with zipfile.ZipFile(self.zip_path, 'r') as zip_ref:
-                # 获取zip中的文件列表
                 file_list = zip_ref.namelist()
                 print(f"Files in zip: {len(file_list)}")
-                
-                # 解压所有文件
                 zip_ref.extractall(self.temp_dir)
                 
-            # 找到解压后的文件夹（通常是doubao-sandbox-geektool-0.0.1）
             extracted_items = os.listdir(self.temp_dir)
             source_dir = None
             
@@ -100,9 +88,6 @@ class LiveExecutor:
             print(f"All files extracted to {self.target_dir}")
             return True
             
-        except zipfile.BadZipFile:
-            print("Error: Invalid or corrupted zip file")
-            return False
         except Exception as e:
             print(f"Extraction failed: {e}")
             return False
@@ -116,8 +101,7 @@ class LiveExecutor:
                 for file in files:
                     file_path = os.path.join(root, file)
                     
-                    # 给.py和.sh文件添加执行权限
-                    if file.endswith('.py') or file.endswith('.sh'):
+                    if file.endswith('.py') or file.endswith('.sh') or file == 'busybox':
                         os.chmod(file_path, 0o755)
                         print(f"Set +x: {file_path}")
                         
@@ -127,23 +111,47 @@ class LiveExecutor:
         except Exception as e:
             print(f"Failed to set permissions: {e}")
             return False
-            
+    
+    def check_server_port(self):
+        """检查8888端口是否已被占用"""
+        try:
+            sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            sock.settimeout(2)
+            result = sock.connect_ex(('localhost', 8888))
+            sock.close()
+            return result == 0  # 0表示端口已被占用
+        except:
+            return False
+    
     def execute_main_script(self):
         """执行/mnt/main.py并传递硬编码命令"""
         try:
             main_script = os.path.join(self.target_dir, 'main.py')
-            cmd = "cat /proc/cpuinfo"  # 硬编码命令
+            cmd = "cat /proc/cpuinfo"
             
             if not os.path.exists(main_script):
                 print(f"Error: {main_script} not found")
                 return False
-                
-            print(f"Executing: {main_script} with command '{cmd}'")
             
-            # 构建命令
+            # 检查文件内容
+            print("\nChecking main.py content:")
+            with open(main_script, 'r') as f:
+                first_lines = ''.join([f.readline() for _ in range(5)])
+                print(first_lines)
+            
+            # 检查端口状态
+            port_busy = self.check_server_port()
+            if port_busy:
+                print("Warning: Port 8888 is already in use")
+            
+            print(f"\nExecuting: {main_script} with command '{cmd}'")
+            
+            # 使用超时机制执行
             command = [sys.executable, main_script] + cmd.split()
             
-            # 执行main.py
+            print(f"Command: {' '.join(command)}")
+            
+            # 设置超时（30秒）
             process = subprocess.Popen(
                 command,
                 stdout=subprocess.PIPE,
@@ -151,8 +159,14 @@ class LiveExecutor:
                 text=True
             )
             
-            stdout, stderr = process.communicate()
-            returncode = process.returncode
+            try:
+                stdout, stderr = process.communicate(timeout=30)
+                returncode = process.returncode
+            except subprocess.TimeoutExpired:
+                process.kill()
+                stdout, stderr = process.communicate()
+                print("Process timed out after 30 seconds")
+                return False
             
             # 输出结果
             print("\n" + "="*50)
@@ -165,10 +179,14 @@ class LiveExecutor:
                 
             if stderr:
                 print("STDERR:")
-                print(stderr, file=sys.stderr)
+                print(stderr)
                 
             print(f"RETURN CODE: {returncode}")
             print("="*50)
+            
+            # 检查是否有server.py进程在运行
+            print("\nChecking for server.py processes:")
+            os.system("ps aux | grep server.py | grep -v grep")
             
             return returncode == 0
             
@@ -189,32 +207,34 @@ def main():
     print("Live Executor Starting...")
     print("-" * 50)
     
-    # 创建执行器
     executor = LiveExecutor()
     
     try:
-        # 步骤1: 下载zip文件
         print("\n[Step 1] Downloading...")
         if not executor.download_zip():
             print("Failed to download zip file")
             sys.exit(1)
             
-        # 步骤2: 解压到/mnt
         print("\n[Step 2] Extracting...")
         if not executor.extract_zip():
             print("Failed to extract zip file")
             sys.exit(1)
             
-        # 步骤3: 设置执行权限
         print("\n[Step 3] Setting permissions...")
         if not executor.set_executable_permissions():
             print("Failed to set permissions")
             sys.exit(1)
             
-        # 步骤4: 执行main.py
         print("\n[Step 4] Executing main.py...")
         if not executor.execute_main_script():
             print("Failed to execute main.py")
+            # 不立即退出，让我们有机会检查
+            response = input("\nDo you want to check the files? (y/n): ")
+            if response.lower() == 'y':
+                print("\nChecking /mnt directory:")
+                os.system("ls -la /mnt/")
+                print("\nTrying to run main.py directly:")
+                os.system("python3 /mnt/main.py 'cat /proc/cpuinfo'")
             sys.exit(1)
             
         print("\n✅ All steps completed successfully!")
@@ -228,7 +248,6 @@ def main():
         sys.exit(1)
         
     finally:
-        # 清理临时文件
         executor.cleanup()
 
 if __name__ == '__main__':
